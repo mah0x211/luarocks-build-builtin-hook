@@ -37,12 +37,17 @@ build = {
 
 ### Hook Scripts
 
-Hooks must be Lua scripts. They are executed in a subprocess using the same Lua interpreter that is running LuaRocks.
+Hooks must be Lua scripts. They are executed in a sandboxed environment within the same Lua VM.
+The `rockspec` table is passed as the first argument to the script, allowing you to modify the build configuration dynamically.
 
 **Example `scripts/preprocess.lua`**:
 ```lua
+local rockspec = ...
+
 print("Running pre-processing...")
--- Perform code generation or setup here
+-- You can modify the rockspec table
+rockspec.variables.MY_CUSTOM_VAR = "some_value"
+
 local f = io.open("src/generated_code.lua", "w")
 f:write("return { generated = true }")
 f:close()
