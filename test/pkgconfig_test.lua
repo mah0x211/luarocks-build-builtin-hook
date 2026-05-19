@@ -29,6 +29,29 @@ local function assert_not_nil(val, msg)
     end
 end
 
+local function assert_deep_equal(expected, actual, msg)
+    if type(expected) ~= type(actual) then
+        error((msg or "") .. " type mismatch: expected " .. type(expected) ..
+                  ", got " .. type(actual))
+    end
+    if type(expected) ~= 'table' then
+        if expected ~= actual then
+            error(
+                (msg or "") .. " Expected " .. tostring(expected) .. ", got " ..
+                    tostring(actual))
+        end
+        return
+    end
+    for k, v in pairs(expected) do
+        assert_deep_equal(v, actual[k], (msg or "") .. "[" .. tostring(k) .. "]")
+    end
+    for k, _ in pairs(actual) do
+        if expected[k] == nil then
+            error((msg or "") .. " unexpected key " .. tostring(k))
+        end
+    end
+end
+
 -- Helper function to create a basic rockspec with pkgconfig_dependencies
 local function create_rockspec(pkg, variables)
     return {
@@ -359,9 +382,8 @@ if zlib_available then
         local rockspec = create_rockspec("zlib")
         resolve_pkgconfig(rockspec)
 
-        -- ZLIB_LIB should be a string (at least one library name)
         assert_not_nil(rockspec.variables.ZLIB_LIB, "ZLIB_LIB should be set")
-        assert_equal("string", type(rockspec.variables.ZLIB_LIB))
+        assert_equal("table", type(rockspec.variables.ZLIB_LIB))
     end)
 
     run_test("Single-lib $(VAR_LIB) in libraries is not expanded by hook",
@@ -390,7 +412,7 @@ if zlib_available then
     end)
 end
 
-run_test("Multi-lib $(VAR_LIB) entry in libraries is expanded", function()
+run_test("Multi-lib *_LIB variable is stored as table", function()
     local rockspec = {
         variables = {},
         build = {
@@ -426,19 +448,22 @@ run_test("Multi-lib $(VAR_LIB) entry in libraries is expanded", function()
     resolve_pkgconfig(rockspec)
     _G.io.popen = old_popen
 
-    -- *_LIB variable should contain all library names space-separated
-    assert_equal("ssl crypto", rockspec.variables.MYLIB_LIB,
-                 "MYLIB_LIB should contain all library names")
+    -- *_LIB variable should be a table of library names
+    assert_equal("table", type(rockspec.variables.MYLIB_LIB))
+    assert_deep_equal({
+        "ssl",
+        "crypto",
+    }, rockspec.variables.MYLIB_LIB,
+                      "MYLIB_LIB should contain all library names")
 
-    -- libraries should be expanded into individual entries
-    assert_equal(2, #rockspec.build.modules.mymod.libraries,
-                 "libraries should have 2 entries after expansion")
-    assert_equal("ssl", rockspec.build.modules.mymod.libraries[1])
-    assert_equal("crypto", rockspec.build.modules.mymod.libraries[2])
+    -- pkgconfig does not expand libraries; resmodvars handles that
+    assert_equal(1, #rockspec.build.modules.mymod.libraries,
+                 "libraries should remain unchanged")
+    assert_equal("$(MYLIB_LIB)", rockspec.build.modules.mymod.libraries[1])
 end)
 
 run_test(
-    "Multi-lib $(VAR_LIB) with surrounding whitespace in libraries is expanded",
+    "Multi-lib $(VAR_LIB) with surrounding whitespace: variable stored as table",
     function()
         local rockspec = {
             variables = {},
@@ -475,89 +500,102 @@ run_test(
         resolve_pkgconfig(rockspec)
         _G.io.popen = old_popen
 
-        -- surrounding whitespace is ignored: entry expands to multiple entries
-        assert_equal(2, #rockspec.build.modules.mymod.libraries)
-        assert_equal("ssl", rockspec.build.modules.mymod.libraries[1])
-        assert_equal("crypto", rockspec.build.modules.mymod.libraries[2])
+        -- *_LIB is stored as a table
+        assert_deep_equal({
+            "ssl",
+            "crypto",
+        }, rockspec.variables.MYLIB_LIB)
+
+        -- pkgconfig does not expand libraries
+        assert_equal(1, #rockspec.build.modules.mymod.libraries)
     end)
 
-run_test("Multi-lib $(VAR_LIB) embedded in library entry raises error",
-         function()
-    local rockspec = {
-        variables = {},
-        build = {
-            pkgconfig_dependencies = {
-                MYLIB = {},
-            },
-            modules = {
-                mymod = {
-                    libraries = {
-                        "extra_$(MYLIB_LIB)",
+run_test(
+    "Multi-lib $(VAR_LIB) embedded in library entry: no error from pkgconfig",
+    function()
+        local rockspec = {
+            variables = {},
+            build = {
+                pkgconfig_dependencies = {
+                    MYLIB = {},
+                },
+                modules = {
+                    mymod = {
+                        libraries = {
+                            "extra_$(MYLIB_LIB)",
+                        },
                     },
                 },
             },
-        },
-    }
+        }
 
-    local call_count = 0
-    local old_popen = _G.io.popen
-    _G.io.popen = function(cmd)
-        call_count = call_count + 1
-        if call_count == 1 then
-            return make_fake_file("MYLIB\n")
+        local call_count = 0
+        local old_popen = _G.io.popen
+        _G.io.popen = function(cmd)
+            call_count = call_count + 1
+            if call_count == 1 then
+                return make_fake_file("MYLIB\n")
+            end
+            return make_fake_file("prefix=/path\n" ..
+                                      "Libs=-L/path/lib -lssl -lcrypto\n")
         end
-        return make_fake_file("prefix=/path\n" ..
-                                  "Libs=-L/path/lib -lssl -lcrypto\n")
-    end
 
-    local ok, err = pcall(resolve_pkgconfig, rockspec)
-    _G.io.popen = old_popen
+        local ok, err = pcall(resolve_pkgconfig, rockspec)
+        _G.io.popen = old_popen
 
-    assert_equal(false, ok,
-                 "should raise an error for embedded multi-lib reference")
-    assert_not_nil(err:find("$(MYLIB_LIB)", 1, true),
-                   "error message should mention the variable reference")
-end)
+        -- pkgconfig no longer raises an error for embedded multi-lib references;
+        -- resmodvars handles expansion via cartesian product
+        assert_equal(true, ok, "should not raise: " .. tostring(err))
+        assert_deep_equal({
+            "ssl",
+            "crypto",
+        }, rockspec.variables.MYLIB_LIB)
+        assert_equal("extra_$(MYLIB_LIB)",
+                     rockspec.build.modules.mymod.libraries[1])
+    end)
 
-run_test("Multi-lib $(VAR_LIB) as string libraries is converted to array",
-         function()
-    local rockspec = {
-        variables = {},
-        build = {
-            pkgconfig_dependencies = {
-                MYLIB = {},
-            },
-            modules = {
-                mymod = {
-                    libraries = "  $(MYLIB_LIB)  ",
+run_test(
+    "Multi-lib $(VAR_LIB): string libraries wrapped to array, not expanded",
+    function()
+        local rockspec = {
+            variables = {},
+            build = {
+                pkgconfig_dependencies = {
+                    MYLIB = {},
+                },
+                modules = {
+                    mymod = {
+                        libraries = "  $(MYLIB_LIB)  ",
+                    },
                 },
             },
-        },
-    }
+        }
 
-    local call_count = 0
-    local old_popen = _G.io.popen
-    _G.io.popen = function(cmd)
-        call_count = call_count + 1
-        if call_count == 1 then
-            return make_fake_file("MYLIB\n")
+        local call_count = 0
+        local old_popen = _G.io.popen
+        _G.io.popen = function(cmd)
+            call_count = call_count + 1
+            if call_count == 1 then
+                return make_fake_file("MYLIB\n")
+            end
+            return make_fake_file("prefix=/path\n" ..
+                                      "includedir=/path/include\n" ..
+                                      "libdir=/path/lib\n" .. "Name=MYLIB\n" ..
+                                      "Version=1.0\n" ..
+                                      "Libs=-L/path/lib -lssl -lcrypto\n" ..
+                                      "Cflags=-I/path/include\n" ..
+                                      "Modversion=1.0\n")
         end
-        return make_fake_file(
-                   "prefix=/path\n" .. "includedir=/path/include\n" ..
-                       "libdir=/path/lib\n" .. "Name=MYLIB\n" .. "Version=1.0\n" ..
-                       "Libs=-L/path/lib -lssl -lcrypto\n" ..
-                       "Cflags=-I/path/include\n" .. "Modversion=1.0\n")
-    end
 
-    resolve_pkgconfig(rockspec)
-    _G.io.popen = old_popen
+        resolve_pkgconfig(rockspec)
+        _G.io.popen = old_popen
 
-    -- string libraries matching the pattern (with whitespace) should be converted to an array
-    assert_equal("table", type(rockspec.build.modules.mymod.libraries))
-    assert_equal(2, #rockspec.build.modules.mymod.libraries)
-    assert_equal("ssl", rockspec.build.modules.mymod.libraries[1])
-    assert_equal("crypto", rockspec.build.modules.mymod.libraries[2])
-end)
+        -- string libraries with dep var ref is wrapped to array but not expanded
+        assert_equal("table", type(rockspec.build.modules.mymod.libraries))
+        assert_equal(1, #rockspec.build.modules.mymod.libraries)
+        assert_equal("  $(MYLIB_LIB)  ",
+                     rockspec.build.modules.mymod.libraries[1])
+    end)
 
 run_test(
     "Package name with hyphens and dots produces normalized variable names",
@@ -720,7 +758,7 @@ run_test(
                      rockspec.build.modules.mymod.libdirs[1])
     end)
 
-run_test("Modules without dep var refs are not modified by get_target_modules",
+run_test("Modules without dep var refs are not modified by normalize_refs",
          function()
     local rockspec = {
         variables = {},
@@ -942,8 +980,9 @@ run_test("resolve_args: pkgdep.library sets LIB and validates file in LIBDIR",
     resolve_pkgconfig(rockspec)
     fs.is_file = orig_is_file
 
-    assert_equal("myfoo", rockspec.variables.MYPKG_LIB,
-                 "LIB should be set from pkgdep.library")
+    assert_deep_equal({
+        "myfoo",
+    }, rockspec.variables.MYPKG_LIB, "LIB should be set from pkgdep.library")
     assert_equal("/my/custom/path/lib", rockspec.variables.MYPKG_LIBDIR)
 end)
 
@@ -1176,7 +1215,9 @@ run_test("find_libdir: library found in fallback path sets LIBDIR", function()
 
     assert_equal("/usr/local/lib", rockspec.variables.MYPKG_LIBDIR,
                  "LIBDIR should be set to the fallback path where library was found")
-    assert_equal("mypkg", rockspec.variables.MYPKG_LIB)
+    assert_deep_equal({
+        "mypkg",
+    }, rockspec.variables.MYPKG_LIB)
 end)
 
 run_test(
@@ -1431,8 +1472,11 @@ run_test(
 
         assert_equal("/my/custom/path/lib", rockspec.variables.MYPKG_LIBDIR,
                      "LIBDIR should be set when all array libraries are found")
-        assert_equal("ssl crypto", rockspec.variables.MYPKG_LIB,
-                     "LIB should be space-separated library names")
+        assert_deep_equal({
+            "ssl",
+            "crypto",
+        }, rockspec.variables.MYPKG_LIB,
+                          "LIB should be a table of library names")
     end)
 
 run_test("pkgdep.library as array: one library missing in LIBDIR → error",
@@ -1618,112 +1662,99 @@ run_test("pkgdep.library: $(VAR) missing → error", function()
 end)
 
 -- ============================================================
--- expand_libraries: multi-library expansion
+-- library field handling (no expansion by pkgconfig)
 -- ============================================================
 
-run_test(
-    "expand_libraries: lib array entries without dep var ref are passed through",
-    function()
-        -- When expand_lib_vars processes a module whose libraries array does NOT
-        -- contain a $(MYLIB_2_LIB) reference, expand_libraries finds no var-ref
-        -- entries (changed=false) and returns the original libs table unchanged.
-        -- Lines 742 (else branch) and 748 (return libs) are both exercised here.
-        local rockspec = {
-            variables = {
-                -- User provides DIR so resolve_one is skipped; resolve_args runs.
-                ["MYLIB-2_DIR"] = "/opt/mylib2",
-            },
-            build = {
-                pkgconfig_dependencies = {
-                    ["MYLIB-2"] = {
-                        library = {
-                            "lib1",
-                            "lib2",
-                        },
-                    },
-                },
-                modules = {
-                    mymod = {
-                        -- incdirs references the raw dep var → puts this module in targets
-                        incdirs = {
-                            "$(MYLIB-2_INCDIR)",
-                        },
-                        -- libraries has NO dep var reference → expand_libraries finds
-                        -- changed=false and returns the original table
-                        libraries = {
-                            "other-lib",
-                        },
+run_test("libraries without dep var ref are unchanged by pkgconfig", function()
+    local rockspec = {
+        variables = {
+            -- User provides DIR so resolve_one is skipped; resolve_args runs.
+            ["MYLIB-2_DIR"] = "/opt/mylib2",
+        },
+        build = {
+            pkgconfig_dependencies = {
+                ["MYLIB-2"] = {
+                    library = {
+                        "lib1",
+                        "lib2",
                     },
                 },
             },
-        }
-
-        local fs = require("luarocks.fs")
-        local orig_is_file = fs.is_file
-        fs.is_file = function(path)
-            return path:find("/opt/mylib2", 1, true) ~= nil
-        end
-
-        resolve_pkgconfig(rockspec)
-        fs.is_file = orig_is_file
-
-        -- libraries should be unchanged (no dep var → no expansion)
-        local libs = rockspec.build.modules.mymod.libraries
-        assert_equal("table", type(libs), "libraries should remain a table")
-        assert_equal(1, #libs, "should still have 1 entry")
-        assert_equal("other-lib", libs[1], "entry should be unchanged")
-    end)
-
-run_test(
-    "expand_libraries: entries without dep var ref are kept alongside expanded entries",
-    function()
-        -- When the libraries array has a mix of entries — some with $(MYLIB_2_LIB)
-        -- and some without — expand_libraries keeps the non-ref entries in new_libs
-        -- (line 742) and appends the expanded library names.
-        local rockspec = {
-            variables = {
-                ["MYLIB-2_DIR"] = "/opt/mylib2",
-            },
-            build = {
-                pkgconfig_dependencies = {
-                    ["MYLIB-2"] = {
-                        library = {
-                            "lib1",
-                            "lib2",
-                        },
+            modules = {
+                mymod = {
+                    incdirs = {
+                        "$(MYLIB-2_INCDIR)",
                     },
-                },
-                modules = {
-                    mymod = {
-                        incdirs = {
-                            "$(MYLIB-2_INCDIR)",
-                        },
-                        -- First entry has dep var ref; second does not.
-                        libraries = {
-                            "$(MYLIB-2_LIB)",
-                            "other-lib",
-                        },
+                    -- libraries has NO dep var reference
+                    libraries = {
+                        "other-lib",
                     },
                 },
             },
-        }
+        },
+    }
 
-        local fs = require("luarocks.fs")
-        local orig_is_file = fs.is_file
-        fs.is_file = function(path)
-            return path:find("/opt/mylib2", 1, true) ~= nil
-        end
+    local fs = require("luarocks.fs")
+    local orig_is_file = fs.is_file
+    fs.is_file = function(path)
+        return path:find("/opt/mylib2", 1, true) ~= nil
+    end
 
-        resolve_pkgconfig(rockspec)
-        fs.is_file = orig_is_file
+    resolve_pkgconfig(rockspec)
+    fs.is_file = orig_is_file
 
-        -- $(MYLIB-2_LIB) expands to lib1 + lib2; "other-lib" is preserved
-        local libs = rockspec.build.modules.mymod.libraries
-        assert_equal("table", type(libs), "libraries should be a table")
-        assert_equal(3, #libs, "should have 3 entries after expansion")
-        assert_equal("other-lib", libs[1], "non-ref entry should be first")
-        assert_equal("lib1", libs[2], "expanded lib1 should follow")
-        assert_equal("lib2", libs[3], "expanded lib2 should follow")
-    end)
+    -- libraries should be unchanged (no dep var ref)
+    local libs = rockspec.build.modules.mymod.libraries
+    assert_equal("table", type(libs), "libraries should remain a table")
+    assert_equal(1, #libs, "should still have 1 entry")
+    assert_equal("other-lib", libs[1], "entry should be unchanged")
+end)
+
+run_test("dep var ref in libraries is normalized but not expanded by pkgconfig",
+         function()
+    local rockspec = {
+        variables = {
+            ["MYLIB-2_DIR"] = "/opt/mylib2",
+        },
+        build = {
+            pkgconfig_dependencies = {
+                ["MYLIB-2"] = {
+                    library = {
+                        "lib1",
+                        "lib2",
+                    },
+                },
+            },
+            modules = {
+                mymod = {
+                    incdirs = {
+                        "$(MYLIB-2_INCDIR)",
+                    },
+                    -- First entry has dep var ref; second does not.
+                    libraries = {
+                        "$(MYLIB-2_LIB)",
+                        "other-lib",
+                    },
+                },
+            },
+        },
+    }
+
+    local fs = require("luarocks.fs")
+    local orig_is_file = fs.is_file
+    fs.is_file = function(path)
+        return path:find("/opt/mylib2", 1, true) ~= nil
+    end
+
+    resolve_pkgconfig(rockspec)
+    fs.is_file = orig_is_file
+
+    -- $(MYLIB-2_LIB) is normalized to $(MYLIB_2_LIB) but not expanded
+    local libs = rockspec.build.modules.mymod.libraries
+    assert_equal("table", type(libs), "libraries should be a table")
+    assert_equal(2, #libs, "should have 2 entries")
+    assert_equal("$(MYLIB_2_LIB)", libs[1], "raw ref should be normalized")
+    assert_equal("other-lib", libs[2], "non-ref entry should be unchanged")
+end)
 
 print('All pkgconfig tests passed')

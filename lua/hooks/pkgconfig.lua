@@ -24,94 +24,24 @@ local util = require('luarocks.util')
 local fs = require('luarocks.fs')
 local resvars = require('luarocks.build.hooks.lib.resvars')
 
---- Process a libraries array, expanding any standalone $(VAR_NAME) entries into
---- individual library names. Raises an error if the reference is embedded within
---- a larger string. Returns the original table if no expansion was needed.
---- @param libs string[] The libraries array to process
---- @param lib_names string[] Library names to expand into
---- @param var_name string The normalized *_LIB variable name (e.g. "OPENSSL_LIB")
---- @return string[] The processed libraries array (new table if expanded)
-local function expand_libraries(libs, lib_names, var_name)
-    local var_pat = '%$%(' .. var_name .. '%)'
-    local var_ref = ('$(%s)'):format(var_name)
-    local new_libs = {}
-    local changed = false
-    for _, entry in ipairs(libs) do
-        if entry:find(var_pat) then
-            local remainder = entry:gsub(var_pat, '')
-            if remainder:match('%S') then
-                error(('%s resolves to multiple libraries and cannot ' ..
-                          'be embedded in a library entry: %q'):format(var_ref,
-                                                                       entry))
-            end
-            changed = true
-        else
-            new_libs[#new_libs + 1] = entry
-        end
+local function format_val(v)
+    if type(v) == 'table' then
+        return '{ ' .. concat(v, ', ') .. ' }'
     end
-
-    -- No entries contained the variable reference, so no expansion needed.
-    if not changed then
-        return libs
-    end
-
-    -- Expand the variable reference into individual library names.
-    for _, lib in ipairs(lib_names) do
-        new_libs[#new_libs + 1] = lib
-    end
-    return new_libs
-end
-
---- Expand multi-lib $(VAR_LIB) entries in the libraries field of target modules.
---- Only expands when pkginfo.pkgdep.library contains more than one library name.
---- Single-lib entries are left as-is for LuaRocks to substitute natively.
---- Raises an error if the variable reference is embedded within a larger string,
---- since a multi-lib variable cannot be meaningfully embedded.
---- @param targets table  Map of module name to module table (from get_target_modules)
---- @param pkginfo pkginfo The pkginfo table from make_pkginfo
-local function expand_lib_vars(targets, pkginfo)
-    local library = pkginfo.pkgdep and pkginfo.pkgdep.library
-    if not library then
-        return
-    end
-
-    -- library may be a string (single name, space-separated list from pkg-config,
-    -- or mutated by resolve_one) or an array from the rockspec.
-    local lib_names = {}
-    if type(library) == 'table' then
-        for _, lib in ipairs(library) do
-            lib_names[#lib_names + 1] = lib
-        end
-    else
-        for lib in library:gmatch('%S+') do
-            lib_names[#lib_names + 1] = lib
-        end
-    end
-    if #lib_names < 2 then
-        return
-    end
-
-    local var_name = pkginfo.prefix .. 'LIB'
-    for _, mod in pairs(targets) do
-        local libs = mod.libraries
-        if type(libs) == 'table' then
-            local result = expand_libraries(libs, lib_names, var_name)
-            if result ~= libs then
-                mod.libraries = result
-            end
-        end
-    end
+    return tostring(v)
 end
 
 local function update_variables(variables, new_vars, old_vars)
     -- Log added and updated variables
     for k, v in pairs(new_vars) do
         local old_val = old_vars[k]
-        local msg = ('    kept %s = %s'):format(k, v)
+        local msg = ('    kept %s = %s'):format(k, format_val(v))
         if not old_val then
-            msg = ('    added %s = %s'):format(k, v)
+            msg = ('    added %s = %s'):format(k, format_val(v))
         elseif old_val ~= v then
-            msg = ('    updated %s = %s (replaced %s)'):format(k, v, old_val)
+            msg = ('    updated %s = %s (replaced %s)'):format(k, format_val(v),
+                                                               format_val(
+                                                                   old_val))
         end
         util.printout(msg)
         old_vars[k] = nil
@@ -120,7 +50,7 @@ local function update_variables(variables, new_vars, old_vars)
 
     -- Log old variables that were removed
     for k, v in pairs(old_vars) do
-        util.printout(('    removed %s = %s'):format(k, v))
+        util.printout(('    removed %s = %s'):format(k, format_val(v)))
     end
 end
 
@@ -265,17 +195,17 @@ local function resolve_one(pkginfo)
         new_vars[pkginfo.prefix .. suffix] = val
     end
 
-    -- Synthesize *_LIB: all library names from Libs, space-separated (no -l prefix).
-    -- This enables libraries = { "$(PREFIX_LIB)" } in rockspecs.
+    -- Synthesize *_LIB: library names from Libs (no -l prefix).
+    -- When multiple libraries are found, stored as a table so that
+    -- resmodvars expands $(PREFIX_LIB) references in module fields.
     local lib_names = {}
     if pkg_data.Libs then
         for lib in pkg_data.Libs:gmatch('%-l(%S+)') do
             lib_names[#lib_names + 1] = lib
         end
         if #lib_names > 0 then
-            local lib_str = concat(lib_names, ' ')
-            new_vars[pkginfo.prefix .. 'LIB'] = lib_str
-            pkginfo.pkgdep.library = lib_str
+            new_vars[pkginfo.prefix .. 'LIB'] = lib_names
+            pkginfo.pkgdep.library = lib_names
         end
     end
 
@@ -438,7 +368,7 @@ end
 --- (from get_compiler_libdirs); sets new_vars[libdir_key] to the first directory
 --- that contains all libraries. Silently leaves LIBDIR unset when neither an
 --- explicit path is given nor all libraries are found together in a default path.
---- new_vars[lib_key] is set to the space-separated list of library names.
+--- new_vars[lib_key] is set to the library names as a table.
 --- @param new_vars table variable map being built
 --- @param libraries string[] library names (e.g. {"pcre2-8"} or {"ssl", "crypto"})
 --- @param libdir_key string variable key for the library directory
@@ -446,7 +376,7 @@ end
 --- @param cc string|nil C compiler command from rockspec.variables.CC
 local function find_libdir(new_vars, libraries, libdir_key, lib_key, cc)
     if not new_vars[lib_key] then
-        new_vars[lib_key] = concat(libraries, ' ')
+        new_vars[lib_key] = libraries
     end
 
     if new_vars[libdir_key] then
@@ -681,12 +611,10 @@ end
 --- those fields as tables.
 --- @param rockspec table The rockspec table
 --- @param pkginfo pkginfo The pkginfo table from make_pkginfo
---- @return pkginfo pkginfo The updated pkginfo with targets referencing this dependency
-local function get_target_modules(rockspec, pkginfo)
-    local targets = pkginfo.targets
+local function normalize_refs(rockspec, pkginfo)
     local modules = rockspec.build and rockspec.build.modules
     if type(modules) ~= 'table' then
-        return pkginfo
+        return
     end
 
     for modname, mod in pairs(modules) do
@@ -700,13 +628,10 @@ local function get_target_modules(rockspec, pkginfo)
                                                 mod[field])
                 if vals then
                     mod[field] = vals
-                    targets[modname] = mod
                 end
             end
         end
     end
-
-    return pkginfo
 end
 
 --- Extract variables with keys starting with prefix from variables table
@@ -749,7 +674,6 @@ end
 --- @field cc string|nil C compiler command from rockspec.variables.CC; used by find_incdir
 ---                      and find_libdir to search the compiler's default paths when INCDIR or
 ---                      LIBDIR are not explicitly set.
---- @field targets table modules referencing this dep's raw-form vars
 
 --- Validate and normalize the pkgconfig_dependencies entry for a single dependency.
 --- header and library fields are processed as follows:
@@ -849,15 +773,16 @@ local function make_pkginfo(rockspec, name, pkgdep)
         end
     end
 
-    return get_target_modules(rockspec, {
+    local pkginfo = {
         name = name,
         raw_prefix = raw_prefix,
         prefix = prefix,
         pkgdep = pkgdep,
         vars = vars,
         cc = rockspec.variables and rockspec.variables.CC,
-        targets = {},
-    })
+    }
+    normalize_refs(rockspec, pkginfo)
+    return pkginfo
 end
 
 --- Resolve dependencies using pkg-config or user-supplied directory overrides.
@@ -889,7 +814,6 @@ local function resolve_pkgconfig(rockspec)
             res = resolve_args(pkginfo)
         end
         update_variables(rockspec.variables, res, pkginfo.vars)
-        expand_lib_vars(pkginfo.targets, pkginfo)
     end
 end
 
