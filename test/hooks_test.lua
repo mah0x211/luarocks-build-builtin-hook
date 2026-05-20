@@ -53,6 +53,23 @@ local mock_util = {
 }
 mock("luarocks.util", mock_util)
 
+-- Mock incdirs module
+local mock_incdirs = {}
+mock_incdirs.reset = function()
+    for k in pairs(mock_incdirs) do
+        if type(k) == 'string' and k ~= "reset" then
+            mock_incdirs[k] = nil
+        end
+    end
+end
+mock("luarocks.build.hooks.lib.incdirs", function(pkgname, constraints)
+    local entry = mock_incdirs[pkgname]
+    if entry then
+        return entry.result, entry.err
+    end
+    return nil, nil
+end)
+
 -- Load module under test
 local builtin_hook = require("luarocks.build.hooks")
 
@@ -88,6 +105,7 @@ local function run_test(name, func)
     io.write("Running " .. name .. "... ")
     mock_builtin:reset()
     mock_fs:reset()
+    mock_incdirs.reset()
     mock_chunk_func = nil
     mock_env_captured = nil
     local status, err = xpcall(func, debug.traceback)
@@ -116,6 +134,18 @@ local function assert_equal(expected, actual, msg)
     if expected ~= actual then
         error((msg or "") .. " Expected " .. tostring(expected) .. ", got " ..
                   tostring(actual))
+    end
+end
+
+local function assert_nil(val, msg)
+    if val ~= nil then
+        error((msg or "") .. " Expected nil, got " .. tostring(val))
+    end
+end
+
+local function assert_not_nil(val, msg)
+    if val == nil then
+        error((msg or "") .. " Expected non-nil value")
     end
 end
 
@@ -778,6 +808,288 @@ run_test("configh builtin hook loads as a function", function()
 
     assert_true(ok, "Should run successfully: " .. (err or ""))
     assert_true(configh_called, "configh hook should have been called")
+end)
+
+print("All tests passed!")
+
+-- ============================================================
+-- set_deps_incvars: DEP_*_INCDIR variables set from dependencies
+-- ============================================================
+
+run_test("set_deps_incvars: no dependencies → no DEP_* variables", function()
+    local rockspec = {
+        build = {
+            modules = {
+                mymod = "src/mymod.c",
+            },
+        },
+        variables = {},
+    }
+    local ok, err = builtin_hook.run(rockspec)
+    assert_true(ok, "Should succeed: " .. tostring(err))
+    for k, _ in pairs(rockspec.variables) do
+        assert_false(k:match("^DEP_"), "No DEP_* variables should remain: " .. k)
+    end
+end)
+
+run_test("set_deps_incvars: dependency with incdirs → DEP_*_INCDIR set",
+         function()
+    mock_incdirs["libfoo"] = {
+        result = {
+            headers = {
+                "foo.h",
+            },
+            incdirs = {
+                "/usr/include/foo",
+            },
+        },
+    }
+    local captured_vars = nil
+    mock_chunk_func = function(rs)
+        captured_vars = {}
+        for k, v in pairs(rs.variables) do
+            captured_vars[k] = v
+        end
+    end
+    local rockspec = {
+        dependencies = {
+            {
+                name = "libfoo",
+                constraints = {},
+            },
+        },
+        build = {
+            before_build = "hook.lua",
+            modules = {
+                mymod = "src/mymod.c",
+            },
+        },
+        variables = {},
+    }
+    local ok, err = builtin_hook.run(rockspec)
+    assert_true(ok, "Should succeed: " .. tostring(err))
+    assert_not_nil(captured_vars, "Hook should have been called")
+    assert_not_nil(captured_vars.DEP_LIBFOO_INCDIR,
+                   "DEP_LIBFOO_INCDIR should be set")
+    assert_equal("table", type(captured_vars.DEP_LIBFOO_INCDIR))
+    assert_equal("/usr/include/foo", captured_vars.DEP_LIBFOO_INCDIR[1])
+end)
+
+run_test("set_deps_incvars: dependency error → warning, no variable set",
+         function()
+    mock_incdirs["libfoo"] = {
+        err = "manifest not found",
+    }
+    local captured_vars = nil
+    mock_chunk_func = function(rs)
+        captured_vars = {}
+        for k, v in pairs(rs.variables) do
+            captured_vars[k] = v
+        end
+    end
+    local rockspec = {
+        dependencies = {
+            {
+                name = "libfoo",
+                constraints = {},
+            },
+        },
+        build = {
+            before_build = "hook.lua",
+            modules = {
+                mymod = "src/mymod.c",
+            },
+        },
+        variables = {},
+    }
+    local ok, err = builtin_hook.run(rockspec)
+    assert_true(ok, "Should succeed despite warning: " .. tostring(err))
+    assert_not_nil(captured_vars, "Hook should have been called")
+    assert_nil(captured_vars.DEP_LIBFOO_INCDIR,
+               "DEP_LIBFOO_INCDIR should not be set on error")
+end)
+
+run_test("set_deps_incvars: multiple dependencies → multiple variables set",
+         function()
+    mock_incdirs["libfoo"] = {
+        result = {
+            headers = {
+                "foo.h",
+            },
+            incdirs = {
+                "/usr/include/foo",
+            },
+        },
+    }
+    mock_incdirs["libbar"] = {
+        result = {
+            headers = {
+                "bar.h",
+            },
+            incdirs = {
+                "/usr/include/bar",
+            },
+        },
+    }
+    local captured_vars = nil
+    mock_chunk_func = function(rs)
+        captured_vars = {}
+        for k, v in pairs(rs.variables) do
+            captured_vars[k] = v
+        end
+    end
+    local rockspec = {
+        dependencies = {
+            {
+                name = "libfoo",
+                constraints = {},
+            },
+            {
+                name = "libbar",
+                constraints = {},
+            },
+        },
+        build = {
+            before_build = "hook.lua",
+            modules = {
+                mymod = "src/mymod.c",
+            },
+        },
+        variables = {},
+    }
+    local ok, err = builtin_hook.run(rockspec)
+    assert_true(ok, "Should succeed: " .. tostring(err))
+    assert_not_nil(captured_vars, "Hook should have been called")
+    assert_not_nil(captured_vars.DEP_LIBFOO_INCDIR,
+                   "DEP_LIBFOO_INCDIR should be set")
+    assert_not_nil(captured_vars.DEP_LIBBAR_INCDIR,
+                   "DEP_LIBBAR_INCDIR should be set")
+    assert_equal("/usr/include/foo", captured_vars.DEP_LIBFOO_INCDIR[1])
+    assert_equal("/usr/include/bar", captured_vars.DEP_LIBBAR_INCDIR[1])
+end)
+
+run_test(
+    "set_deps_incvars: name normalization (io-isfile → DEP_IO_ISFILE_INCDIR)",
+    function()
+        mock_incdirs["io-isfile"] = {
+            result = {
+                headers = {
+                    "isfile.h",
+                },
+                incdirs = {
+                    "/usr/include/io-isfile",
+                },
+            },
+        }
+        local captured_vars = nil
+        mock_chunk_func = function(rs)
+            captured_vars = {}
+            for k, v in pairs(rs.variables) do
+                captured_vars[k] = v
+            end
+        end
+        local rockspec = {
+            dependencies = {
+                {
+                    name = "io-isfile",
+                    constraints = {},
+                },
+            },
+            build = {
+                before_build = "hook.lua",
+                modules = {
+                    mymod = "src/mymod.c",
+                },
+            },
+            variables = {},
+        }
+        local ok, err = builtin_hook.run(rockspec)
+        assert_true(ok, "Should succeed: " .. tostring(err))
+        assert_not_nil(captured_vars, "Hook should have been called")
+        assert_not_nil(captured_vars.DEP_IO_ISFILE_INCDIR,
+                       "DEP_IO_ISFILE_INCDIR should be set with normalized name")
+        assert_equal("/usr/include/io-isfile",
+                     captured_vars.DEP_IO_ISFILE_INCDIR[1])
+    end)
+
+run_test("set_deps_incvars: dependency with no incdirs → no variable set",
+         function()
+    mock_incdirs["libfoo"] = {
+        result = nil,
+        err = nil,
+    }
+    local captured_vars = nil
+    mock_chunk_func = function(rs)
+        captured_vars = {}
+        for k, v in pairs(rs.variables) do
+            captured_vars[k] = v
+        end
+    end
+    local rockspec = {
+        dependencies = {
+            {
+                name = "libfoo",
+                constraints = {},
+            },
+        },
+        build = {
+            before_build = "hook.lua",
+            modules = {
+                mymod = "src/mymod.c",
+            },
+        },
+        variables = {},
+    }
+    local ok, err = builtin_hook.run(rockspec)
+    assert_true(ok, "Should succeed: " .. tostring(err))
+    assert_not_nil(captured_vars, "Hook should have been called")
+    assert_nil(captured_vars.DEP_LIBFOO_INCDIR,
+               "No variable should be set for dependency without incdirs")
+end)
+
+run_test("set_deps_incvars: multiple incdirs for one dependency", function()
+    mock_incdirs["libfoo"] = {
+        result = {
+            headers = {
+                "foo.h",
+                "bar.h",
+            },
+            incdirs = {
+                "/usr/include/foo",
+                "/usr/include/common",
+            },
+        },
+    }
+    local captured_vars = nil
+    mock_chunk_func = function(rs)
+        captured_vars = {}
+        for k, v in pairs(rs.variables) do
+            captured_vars[k] = v
+        end
+    end
+    local rockspec = {
+        dependencies = {
+            {
+                name = "libfoo",
+                constraints = {},
+            },
+        },
+        build = {
+            before_build = "hook.lua",
+            modules = {
+                mymod = "src/mymod.c",
+            },
+        },
+        variables = {},
+    }
+    local ok, err = builtin_hook.run(rockspec)
+    assert_true(ok, "Should succeed: " .. tostring(err))
+    assert_not_nil(captured_vars, "Hook should have been called")
+    assert_not_nil(captured_vars.DEP_LIBFOO_INCDIR,
+                   "DEP_LIBFOO_INCDIR should be set")
+    assert_equal(2, #captured_vars.DEP_LIBFOO_INCDIR)
+    assert_equal("/usr/include/foo", captured_vars.DEP_LIBFOO_INCDIR[1])
+    assert_equal("/usr/include/common", captured_vars.DEP_LIBFOO_INCDIR[2])
 end)
 
 print("All tests passed!")

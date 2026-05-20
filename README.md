@@ -167,16 +167,50 @@ Built-in hooks and the module fields resolve pass use a shared variable substitu
 
 The hooks backend executes in the following order:
 
-1. **`before_build` hooks** are run in the order listed.
-2. **Module fields resolve pass** — `$(VAR)` expressions are resolved in each `build.modules` entry:
+1. **Dependency include directory variables** — For each entry in `dependencies`, the backend looks up the installed package's `CONFDIR` for header files in its rock manifest. If header files are found, a `DEP_<NAME>_INCDIR` variable is set in `rockspec.variables` (see [Dependency Include Variables](#dependency-include-variables)).
+2. **`before_build` hooks** are run in the order listed.
+3. **Module fields resolve pass** — `$(VAR)` expressions are resolved in each `build.modules` entry:
    - For a **string module path** (e.g. `["my.mod"] = "$(SRC)/mod.lua"`), the path is resolved. An error is raised if it resolves to nil or empty.
    - For a **table module definition**, the following fields are resolved:
      - `sources` — **required**: an error is raised if the field resolves to nil or an empty array.
      - `incdirs`, `libdirs`, `libraries`, `defines` — **optional**: the field is removed when it resolves to nil or an empty array.
-3. **`builtin.run()`** is called to compile and install modules.
-4. **`after_build` hooks** are run in the order listed.
+4. **`builtin.run()`** is called to compile and install modules.
+5. **`after_build` hooks** are run in the order listed.
 
-This ordering means that `before_build` hooks (such as `$(pkgconfig)`) can populate variables in `rockspec.variables`, and those variables are then available when the module fields are resolved in step 2.
+This ordering means that `DEP_*_INCDIR` variables are available in `before_build` hooks and in module field `$(...)` expressions. `before_build` hooks (such as `$(pkgconfig)`) can also populate additional variables in `rockspec.variables`, and those variables are then available when the module fields are resolved in step 3.
+
+
+## Dependency Include Variables
+
+For each package listed in `dependencies`, the backend automatically queries the installed rock manifest for header files (`*.h`) in the package's `CONFDIR` — the directory where LuaRocks stores configuration files for a module (an absolute path inside the rock entry of the rocks tree, e.g. `<tree>/<name>/<version>/conf/`). If headers are found, a `DEP_<NAME>_INCDIR` variable is set in `rockspec.variables` with an array of include directory paths.
+
+**Variable naming:** The dependency name is uppercased and all non-alphanumeric characters are replaced with underscores. For example:
+
+| Dependency name | Variable |
+|----------------|----------|
+| `foo` | `DEP_FOO_INCDIR` |
+| `io-bar` | `DEP_IO_BAR_INCDIR` |
+| `lua-baz-qux` | `DEP_LUA_BAZ_QUX_INCDIR` |
+
+**Usage in module fields:**
+
+```lua
+dependencies = {
+    "io-bar",
+}
+
+build = {
+    type = "hooks",
+    modules = {
+        mymod = {
+            sources = { "src/mymod.c" },
+            incdirs = { "$(DEP_IO_BAR_INCDIR)" },
+        },
+    },
+}
+```
+
+Only header files (`*.h`) found in the dependency's installed `CONFDIR` are used. Header files placed in other directories (e.g. `lib/`) are not included. If a dependency has no header files in its `CONFDIR`, or is not installed, the corresponding variable is simply not set. Variables are not set for dependencies that produce errors during lookup (a warning is printed instead).
 
 
 ## Built-in Hooks
