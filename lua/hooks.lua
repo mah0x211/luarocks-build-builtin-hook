@@ -21,6 +21,7 @@
 --
 local concat = table.concat
 local unpack = unpack or table.unpack
+local get_pkg_incdirs = require('luarocks.build.hooks.lib.incdirs')
 local builtin = require('luarocks.build.builtin')
 local fs = require('luarocks.fs')
 local util = require('luarocks.util')
@@ -306,12 +307,37 @@ local function run_hooks(rockspec, no_install)
     return true
 end
 
+local function normalize_varname(s)
+    return s:gsub('[^%a%d_]', '_'):upper()
+end
+
+local function set_deps_incvars(rockspec)
+    for _, dep in ipairs(rockspec.dependencies or {}) do
+        local info, err = get_pkg_incdirs(dep.name, dep.constraints)
+        if err then
+            util.printout(
+                ('Warning: Failed to get include directories for dependency %q: %s'):format(
+                    dep.name, err))
+        elseif info then
+            local varname = 'DEP_' .. normalize_varname(dep.name) .. '_INCDIR'
+            rockspec.variables[varname] = info.incdirs
+        end
+    end
+end
+
 local function run(rockspec, no_install)
     local target_dir = fs and fs.current_dir and fs.current_dir() or '.'
     util.printout(('Changing working directory to %s'):format(target_dir))
 
     local cwd = assert(chdir(target_dir))
     local ok, res, err = pcall(function()
+        -- Set DEP_*_INCDIR variables from dependencies before running hooks,
+        -- so that hooks can reference these variables and users can use
+        -- $(DEP_FOO_INCDIR) in their rockspec module fields.
+        set_deps_incvars(rockspec)
+
+        -- Delegate to run_hooks, which will run before_build hooks, then the
+        -- standard build process, then after_build hooks.
         return run_hooks(rockspec, no_install)
     end)
 
