@@ -26,6 +26,7 @@ local builtin = require('luarocks.build.builtin')
 local fs = require('luarocks.fs')
 local util = require('luarocks.util')
 local chdir = require('luarocks.build.hooks.chdir')
+local queries_from_dep_string = require("luarocks.queries").from_dep_string
 local resolve_modvars = require('luarocks.build.hooks.lib.resmodvars')
 
 --- Create a shallow copy of a table, recursively copying any nested tables.
@@ -307,20 +308,37 @@ local function run_hooks(rockspec, no_install)
     return true
 end
 
+--- Normalize a dependency name into an environment variable name.
+--- E.g. "foo/bar" -> "FOO_BAR", "baz-qux" -> "BAZ_QUX".
+--- @param s string The dependency name to normalize.
+--- @return string The normalized variable name.
 local function normalize_varname(s)
     return s:gsub('[^%a%d_]', '_'):upper()
 end
 
+--- Set DEP_*_INCDIR variables for the dependencies of the rockspec, so that
+--- hooks can reference these variables and users can use $(DEP_FOO_INCDIR) in
+--- their rockspec_file_values.
+--- @param rockspec table The rockspec to set variables for.
 local function set_deps_incvars(rockspec)
     for _, dep in ipairs(rockspec.dependencies or {}) do
-        local info, err = get_pkg_incdirs(dep.name, dep.constraints)
-        if err then
+        local qry = type(dep) == 'table' and dep or queries_from_dep_string(dep)
+
+        if type(qry) ~= 'table' or type(qry.name) ~= 'string' then
             util.printout(
-                ('Warning: Failed to get include directories for dependency %q: %s'):format(
-                    dep.name, err))
-        elseif info then
-            local varname = 'DEP_' .. normalize_varname(dep.name) .. '_INCDIR'
-            rockspec.variables[varname] = info.incdirs
+                ('  Warning: Unrecognized dependency format: %q (type %s)'):format(
+                    tostring(dep), type(dep)))
+        elseif qry.name ~= 'lua' then
+            local info, err = get_pkg_incdirs(qry.name, qry.constraints)
+            if err then
+                util.printout(
+                    ('Warning: Failed to get include directories for dependency %q: %s'):format(
+                        qry.name, err))
+            elseif info then
+                local varname = 'DEP_' .. normalize_varname(qry.name) ..
+                                    '_INCDIR'
+                rockspec.variables[varname] = info.incdirs
+            end
         end
     end
 end
