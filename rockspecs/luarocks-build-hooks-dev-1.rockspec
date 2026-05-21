@@ -28,6 +28,7 @@ build = {
         ["luarocks.build.hooks.extra-vars"] = "lua/hooks/extra-vars.lua",
         ["luarocks.build.hooks.pkgconfig"] = "lua/hooks/pkgconfig.lua",
         ["luarocks.build.hooks.configh"] = "lua/hooks/configh.lua",
+        ["luarocks.build.hooks.header-symlink"] = "lua/hooks/header-symlink.lua",
         ["luarocks.build.hooks.chdir"] = "src/chdir.c",
     },
 }
