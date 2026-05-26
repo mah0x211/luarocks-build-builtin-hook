@@ -184,6 +184,10 @@ This ordering means that `DEP_*_INCDIR` variables are available in `before_build
 
 For each package listed in `dependencies`, the backend automatically queries the installed rock manifest for header files (`*.h`) in the package's `CONFDIR` — the directory where LuaRocks stores configuration files for a module (an absolute path inside the rock entry of the rocks tree, e.g. `<tree>/<name>/<version>/conf/`). If headers are found, a `DEP_<NAME>_INCDIR` variable is set in `rockspec.variables` with an array of include directory paths.
 
+**Transitive resolution.** When a dependency itself depends on other packages that expose headers, the include directories of those packages are merged into the same `DEP_<NAME>_INCDIR`. This means that if `foo` exposes `foo.h` and `foo.h` internally includes `bar.h` from a transitive dependency `bar`, then `DEP_FOO_INCDIR` will already contain the include directory for `bar` and no additional `DEP_BAR_INCDIR` reference is required to compile against `foo`.
+
+Resolution is computed once per package per build using a shared in-memory cache, and the fully merged result is persisted to `<CONFDIR>/<pkgname>.pc.lua` in each visited package so that subsequent builds can read it back as a fast path instead of recomputing the closure. Packages that do not yet have a `.pc.lua` file are resolved on demand from their installed rock manifest and rockspec; if the `.pc.lua` cannot be written (for example because the dependency lives in a read-only tree), the build still continues using the in-memory cache.
+
 **Variable naming:** The dependency name is uppercased and all non-alphanumeric characters are replaced with underscores. For example:
 
 | Dependency name | Variable |
@@ -210,7 +214,7 @@ build = {
 }
 ```
 
-Only header files (`*.h`) found in the dependency's installed `CONFDIR` are used. Header files placed in other directories (e.g. `lib/`) are not included. If a dependency has no header files in its `CONFDIR`, or is not installed, the corresponding variable is simply not set. Variables are not set for dependencies that produce errors during lookup (a warning is printed instead).
+Only header files (`*.h`) found in the dependency's installed `CONFDIR` (and, transitively, the `CONFDIR`s of its own dependencies) are used. Header files placed in other directories (e.g. `lib/`) are not included. If a dependency has no header files in its `CONFDIR` and none of its transitive dependencies do either, the corresponding variable is simply not set. Variables are not set for dependencies that produce errors during lookup (a warning is printed instead).
 
 
 ## Built-in Hooks
