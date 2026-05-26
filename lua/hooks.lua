@@ -324,6 +324,7 @@ end
 --- @param rockspec table The rockspec to set variables for.
 local function set_deps_incvars(rockspec)
     local pkgstats = {}
+    util.printout('hooks: resolving dependency include directories...')
     for _, dep in ipairs(rockspec.dependencies or {}) do
         local qry = type(dep) == 'table' and dep or queries_from_dep_string(dep)
 
@@ -332,6 +333,7 @@ local function set_deps_incvars(rockspec)
                 ('  Warning: Unrecognized dependency format: %q (type %s)'):format(
                     tostring(dep), type(dep)))
         elseif qry.name ~= 'lua' then
+            util.printout(('  checking dependency: %s ...'):format(qry.name))
             local metadata, err = get_pkg_incdirs(pkgstats, qry.name,
                                                   qry.constraints)
             if err then

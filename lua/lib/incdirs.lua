@@ -21,6 +21,7 @@
 --
 local pkginfo = require('luarocks.build.hooks.lib.pkginfo')
 local queries_from_dep_string = require('luarocks.queries').from_dep_string
+local util = require('luarocks.util')
 
 --- Append elements from `src` array into `dst` array, skipping duplicates.
 --- The `seen` set is mutated to track membership; callers must seed it from
@@ -122,6 +123,7 @@ local function traverse_pkginfo(pkgstats, pkgname, constraints, graph)
         return cached
     end
 
+    util.printout(('    loading package info: %s ...'):format(pkgname))
     local info, err, ispcfile = pkginfo.get(pkgname, constraints)
     if not info then
         return nil, err

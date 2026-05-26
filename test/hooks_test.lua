@@ -48,9 +48,20 @@ local mock_cfg = {
 mock("luarocks.core.cfg", mock_cfg)
 
 local mock_util = {
-    printout = function(...)
-    end,
+    messages = {},
 }
+mock_util.reset = function(self)
+    self.messages = {}
+end
+mock_util.printout = function(...)
+    local parts = {
+        ...,
+    }
+    for i, v in ipairs(parts) do
+        parts[i] = tostring(v)
+    end
+    mock_util.messages[#mock_util.messages + 1] = table.concat(parts, "\t")
+end
 mock("luarocks.util", mock_util)
 
 -- Mock incdirs module
@@ -108,6 +119,7 @@ local function run_test(name, func)
     mock_builtin:reset()
     mock_fs:reset()
     mock_incdirs.reset()
+    mock_util:reset()
     mock_chunk_func = nil
     mock_env_captured = nil
     local status, err = xpcall(func, debug.traceback)
@@ -137,6 +149,15 @@ local function assert_equal(expected, actual, msg)
         error((msg or "") .. " Expected " .. tostring(expected) .. ", got " ..
                   tostring(actual))
     end
+end
+
+local function assert_table_contains(tbl, needle, msg)
+    for _, v in ipairs(tbl) do
+        if tostring(v):find(needle, 1, true) then
+            return
+        end
+    end
+    error((msg or "") .. " Expected to find " .. tostring(needle) .. " in log")
 end
 
 local function assert_nil(val, msg)
@@ -875,6 +896,9 @@ run_test("set_deps_incvars: dependency with incdirs → DEP_*_INCDIR set",
                    "DEP_LIBFOO_INCDIR should be set")
     assert_equal("table", type(captured_vars.DEP_LIBFOO_INCDIR))
     assert_equal("/usr/include/foo", captured_vars.DEP_LIBFOO_INCDIR[1])
+    assert_table_contains(mock_util.messages,
+                          "hooks: resolving dependency include directories...")
+    assert_table_contains(mock_util.messages, "checking dependency: libfoo ...")
 end)
 
 run_test("set_deps_incvars: dependency error → warning, no variable set",

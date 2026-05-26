@@ -1,5 +1,23 @@
 require("luacov")
 
+local mock_util = {
+    messages = {},
+}
+mock_util.reset = function()
+    mock_util.messages = {}
+end
+package.loaded["luarocks.util"] = {
+    printout = function(...)
+        local parts = {
+            ...,
+        }
+        for i, v in ipairs(parts) do
+            parts[i] = tostring(v)
+        end
+        mock_util.messages[#mock_util.messages + 1] = table.concat(parts, "\t")
+    end,
+}
+
 -- Mock luarocks.persist (used by pkginfo.save fallback).
 local mock_persist = {
     save_calls = {},
@@ -71,6 +89,7 @@ local incdirs = require("luarocks.build.hooks.lib.incdirs")
 -- Test helpers
 local function run_test(name, func)
     io.write("Running " .. name .. "... ")
+    mock_util.reset()
     mock_pkginfo.reset()
     mock_persist.reset()
     local status, err = xpcall(func, debug.traceback)
@@ -99,6 +118,14 @@ end
 local function assert_not_nil(val, msg)
     if val == nil then
         error((msg or "") .. " Expected non-nil value", 2)
+    end
+end
+
+local function assert_contains(haystack, needle, msg)
+    if not tostring(haystack):find(needle, 1, true) then
+        error(
+            (msg or "") .. " Expected to find " .. tostring(needle) .. " in " ..
+                tostring(haystack), 2)
     end
 end
 
@@ -404,4 +431,31 @@ run_test("Passes pkgname and constraints to pkginfo", function()
     incdirs({}, "missing", constraints)
     assert_equal("missing", mock_pkginfo.calls[1].pkgname)
     assert_equal(constraints, mock_pkginfo.calls[1].constraints)
+end)
+
+run_test("Logs before loading pkginfo for each uncached package", function()
+    register_pkg("foo", {
+        incdirs = {
+            "/conf/foo",
+        },
+        headers = {
+            "foo.h",
+        },
+        dependencies = {
+            "bar",
+        },
+    })
+    register_pkg("bar", {
+        incdirs = {
+            "/conf/bar",
+        },
+        headers = {
+            "bar.h",
+        },
+    })
+
+    local result = incdirs({}, "foo")
+    assert_not_nil(result)
+    assert_contains(mock_util.messages[1], "loading package info: foo ...")
+    assert_contains(mock_util.messages[2], "loading package info: bar ...")
 end)
