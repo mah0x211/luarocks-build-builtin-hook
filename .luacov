@@ -11,4 +11,5 @@ modules = {
     ["luarocks.build.hooks.lib.pkginfo"] = "lua/lib/pkginfo.lua",
     ["luarocks.build.hooks.lib.resvars"] = "lua/lib/resvars.lua",
     ["luarocks.build.hooks.lib.resmodvars"] = "lua/lib/resmodvars.lua",
+    ["luarocks.build.hooks.lib.util"] = "lua/lib/util.lua",
 }

@@ -318,9 +318,12 @@ end
 
 --- Set DEP_*_INCDIR variables for the dependencies of the rockspec, so that
 --- hooks can reference these variables and users can use $(DEP_FOO_INCDIR) in
---- their rockspec_file_values.
+--- their rockspec_file_values. A per-build pkgstats cache is shared across
+--- all direct dependencies so that transitive include-metadata lookups are
+--- performed once per package per build.
 --- @param rockspec table The rockspec to set variables for.
 local function set_deps_incvars(rockspec)
+    local pkgstats = {}
     for _, dep in ipairs(rockspec.dependencies or {}) do
         local qry = type(dep) == 'table' and dep or queries_from_dep_string(dep)
 
@@ -329,15 +332,16 @@ local function set_deps_incvars(rockspec)
                 ('  Warning: Unrecognized dependency format: %q (type %s)'):format(
                     tostring(dep), type(dep)))
         elseif qry.name ~= 'lua' then
-            local info, err = get_pkg_incdirs(qry.name, qry.constraints)
+            local metadata, err = get_pkg_incdirs(pkgstats, qry.name,
+                                                  qry.constraints)
             if err then
                 util.printout(
                     ('Warning: Failed to get include directories for dependency %q: %s'):format(
                         qry.name, err))
-            elseif info then
+            elseif metadata then
                 local varname = 'DEP_' .. normalize_varname(qry.name) ..
                                     '_INCDIR'
-                rockspec.variables[varname] = info.incdirs
+                rockspec.variables[varname] = metadata.incdirs
             end
         end
     end

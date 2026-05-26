@@ -62,7 +62,9 @@ mock_incdirs.reset = function()
         end
     end
 end
-mock("luarocks.build.hooks.lib.incdirs", function(pkgname, constraints)
+mock("luarocks.build.hooks.lib.incdirs",
+     function(pkgstats, pkgname, constraints)
+    mock_incdirs.last_pkgstats = pkgstats
     local entry = mock_incdirs[pkgname]
     if entry then
         return entry.result, entry.err
